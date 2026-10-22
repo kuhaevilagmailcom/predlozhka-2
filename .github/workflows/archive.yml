@@ -1,0 +1,27 @@
+name: Build project archive
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/archive.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile Python source
+        run: python -m compileall -q main.py storage.py tests
+      - name: Create project ZIP
+        run: |
+          zip -q -r predlozka.zip .             -x ".git/*" "*.pyc" "*/__pycache__/*" "*.sqlite3" ".env"
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: predlozka
+          path: predlozka.zip
+          if-no-files-found: error
