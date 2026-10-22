@@ -531,11 +531,11 @@ def sent_at(utc_value: str) -> str:
 
 STATUS_TEXT = {
     "pending": "",
-    "published": f"{ce('check')} Заявка принята и опубликована",
-    "rejected": f"{ce('cross')} Заявка отклонена",
-    "blocked": f"{ce('ban')} Пользователь заблокирован",
-    "publish_uncertain": f"{ce('warning')} Публикация не подтверждена — проверь канал вручную",
-    "delivery_failed": f"{ce('warning')} Не удалось передать заявку в группу",
+    "published": "Опубликовано",
+    "rejected": "Отклонено",
+    "blocked": "Отправитель заблокирован",
+    "publish_uncertain": "Проверь публикацию в канале",
+    "delivery_failed": "Ошибка доставки",
 }
 STATUS_BUTTON = {
     "published": "Принята",
@@ -578,7 +578,7 @@ def moderation_footer(sub, status: str, *, html_safe: bool = False) -> str:
     if html_safe:
         username = html.escape(username)
         name = html.escape(name)
-    status_text = STATUS_TEXT.get(status, f"{ce('info')} Заявка обработана")
+    status_text = STATUS_TEXT.get(status, "Заявка обработана")
     decision_labels = {
         "published": "Принял",
         "rejected": "Отклонил",
@@ -591,14 +591,13 @@ def moderation_footer(sub, status: str, *, html_safe: bool = False) -> str:
     if decision_label and reviewer_id and reviewer_name:
         if html_safe:
             reviewer_name = html.escape(reviewer_name)
-        decision_line = (
-            f"\n{ce('profile')} {decision_label}: {reviewer_name} · ID {reviewer_id}"
-        )
+        decision_line = f"\n{decision_label}: {reviewer_name} (ID {reviewer_id})"
     return (
-        "━━━━━━━━━━━━━━\n"
-        f"{ce('profile')} Отправитель: {username} · ID {sub['user_id']}\n"
-        f"{ce('profile')} Имя: {name}\n"
-        f"{ce('timer')} Отправлено: {sent_at(sub['created_at'])}\n"
+        "\n────────────\n"
+        f"От: {username}\n"
+        f"ID: {sub['user_id']}\n"
+        f"Имя: {name}\n"
+        f"Дата: {sent_at(sub['created_at'])}\n"
         f"{status_text}"
         f"{decision_line}"
     )
@@ -746,7 +745,7 @@ async def copy_submission(
             preview = html.escape(str(sub["quote_text"] or "[Сообщение]")[:700])
             control_text = (
                 f"{moderation_footer(sub, 'pending', html_safe=True)}\n\n"
-                f"{ce('info')} Контент заявки: {preview}"
+                f"Сообщение: {preview}"
             )
             control_card = await safe_bot_send_message(
                 bot,
@@ -806,7 +805,7 @@ async def send_to_moderation_group(bot: Bot, sub_id: int) -> None:
     db.set_card_pending(sub_id, card_id, card_mode)
     current_sub = db.get(sub_id) or sub
     await update_moderation_card(bot, current_sub, "pending")
-    await safe_notify(bot, sub["user_id"], f"{ce('check')} Предложение отправлено.")
+    await safe_notify(bot, sub["user_id"], "Отправлено на проверку.")
 
 
 async def finish_album(bot: Bot, sub_id: int, key: tuple[int, str]) -> None:
@@ -906,10 +905,10 @@ def render_users_page(offset: int) -> str:
     else:
         known_submissions = db.known_submission_user_count()
         body = (
-            "В текущей базе нет сохранённых пользователей. "
+            "Список пока пуст. "
             f"Пользователей из старых заявок найдено: <b>{known_submissions}</b>.\n\n"
-            "Telegram не позволяет боту автоматически выгрузить всех, кто когда-либо нажимал /start. "
-            "Если людей в боте тысячи, проверь DB_PATH в BotHost: возможно, бот открыл новую пустую SQLite-базу "
+            ""
+            "Если данные пропали, проверь DB_PATH: возможно, подключена другая база "
             "вместо прежней."
         )
     return (
@@ -1023,15 +1022,14 @@ async def start(message: Message, bot: Bot) -> None:
     if await is_blocked_from_suggestions(bot, message.from_user.id):
         await safe_answer(
             message,
-            f"{ce('ban')} Доступ к отправке предложений заблокирован.",
+            "Отправка предложений недоступна.",
             reply_markup=ReplyKeyboardRemove(remove_keyboard=True),
         )
         return
     await safe_answer(
         message,
-        f"{ce('wave')} <b>Предложка</b>\n\n"
-        "Отправь сюда текст, фото, видео, кружок, голосовое, GIF, стикер или файл. "
-        "Предложение появится в группе на проверке.",
+        "<b>Предложка</b>\n\n"
+        "Отправь текст или медиа. После проверки сообщение смогут опубликовать.",
         reply_markup=ReplyKeyboardRemove(remove_keyboard=True),
     )
 
@@ -1047,24 +1045,21 @@ async def help_command(message: Message, bot: Bot) -> None:
             )
         await safe_answer(
             message,
-            "ℹ️ <b>Доступные команды</b>\n"
-            "/start — начать отправку предложений\n"
-            "/help — показать эту справку",
+            "Отправь сообщение прямо сюда.\n"
+            "/start — начало\n/help — помощь",
         )
         return
     if message.chat.type not in {"group", "supergroup"} or message.chat.id != moderation_chat_id():
         return
     await safe_answer(
         message,
-        "ℹ️ <b>Команды группы модерации</b>\n\n"
-        "/top — рейтинг модераторов и статистика публикаций\n"
-        "/users — список пользователей с ником и ID\n"
-        "/done ТЕКСТ — рассылка всем пользователям; также можно ответить командой /done на сообщение "
-        "и разослать его (после подтверждения)\n"
-        "/unblock USER_ID — снять блокировку\n"
-        "/cleanbuttons — убрать кнопки с сообщения, на которое ответили; "
-        "/cleanbuttons POST_ID — убрать кнопки в канале\n"
-        "/help — список команд",
+        "<b>Команды</b>\n"
+        "/top — статистика\n"
+        "/users — пользователи\n"
+        "/done — рассылка (текстом или ответом)\n"
+        "/unblock ID — разблокировать\n"
+        "/cleanbuttons — убрать кнопки\n"
+        "/chatid — ID группы",
     )
 
 
@@ -1128,19 +1123,19 @@ async def done_command(message: Message, bot: Bot) -> None:
     if total == 0:
         known_submissions = db.known_submission_user_count()
         await message.answer(
-            "Пока нет пользователей в текущей базе для рассылки.\n"
+            "Некому отправлять рассылку.\n"
             f"Пользователей из старых заявок найдено: {known_submissions}.\n\n"
             "Если ботом пользуются тысячи людей, проверь DB_PATH в BotHost: "
             "возможно, приложение запущено с новой пустой SQLite-базой. "
-            "Telegram не позволяет автоматически получить полный список старых пользователей по /start."
+            ""
         )
         return
     confirmation = await safe_answer(
         message,
-        f"📣 <b>Подтверди рассылку</b>\n"
+        f"<b>Рассылка</b>\n"
         f"Получателей в базе: <b>{total}</b>\n\n"
         f"{preview_text}\n\n"
-        "Нажми «Отправить всем», чтобы начать.",
+        "",
         reply_markup=broadcast_confirmation_keyboard(),
     )
     session["confirm_message_id"] = confirmation.message_id
@@ -1173,12 +1168,12 @@ async def top_command(message: Message) -> None:
     periods = publication_window_starts()
     published = db.published_counts(**periods)
     lines.append(
-        "📊 <b>Опубликовано постов</b>\n"
+        "<b>Опубликовано постов</b>\n"
         f"Сегодня: <b>{published['today']}</b>\n"
         f"За последние 7 дней: <b>{published['week']}</b>\n"
         f"За месяц: <b>{published['month']}</b>"
     )
-    await message.answer("🏆 <b>Топ модераторов</b>\n\n" + "\n\n".join(lines))
+    await message.answer("<b>Топ модераторов</b>\n\n" + "\n\n".join(lines))
 
 
 @router.message(Command("unblock"), F.chat.type.in_({"group", "supergroup"}))
@@ -1243,7 +1238,7 @@ async def inbox(message: Message, bot: Bot) -> None:
     if await is_blocked_from_suggestions(bot, sender_id):
         await safe_answer(
             message,
-            f"{ce('ban')} Доступ к отправке предложений заблокирован.",
+            "Отправка предложений недоступна.",
             reply_markup=ReplyKeyboardRemove(remove_keyboard=True),
         )
         return
@@ -1317,8 +1312,7 @@ async def group_chat_id_command(message: Message) -> None:
     # Works in any group where the bot is present, even before moderation is configured.
     await safe_answer(
         message,
-        f"ID этой группы: <code>{message.chat.id}</code>\n"
-        "Укажи его в переменной <code>MODERATION_CHAT_ID</code> и перезапусти бота.",
+        f"ID группы: <code>{message.chat.id}</code>",
     )
 
 
@@ -1400,7 +1394,7 @@ async def update_moderation_card(bot: Bot, sub, status: str) -> None:
         preview = html.escape(str(sub["quote_text"] or "[Сообщение]")[:700])
         text = (
             f"{moderation_footer(sub, status, html_safe=True)}\n\n"
-            f"{ce('info')} Контент заявки: {preview}"
+            f"Сообщение: {preview}"
         )
         try:
             await safe_bot_edit_message_text(
@@ -1496,7 +1490,7 @@ async def update_moderation_card(bot: Bot, sub, status: str) -> None:
             if decision_label and reviewer_id and reviewer_name
             else ""
         )
-        status_text = STATUS_TEXT.get(status, f"{ce('info')} Заявка обработана")
+        status_text = STATUS_TEXT.get(status, "Заявка обработана")
         try:
             await safe_bot_send_message(
                 bot,
@@ -1564,7 +1558,7 @@ async def broadcast_callback(callback: CallbackQuery, bot: Bot) -> None:
         await callback.answer("Рассылка отменена.")
         await safe_edit_text(
             message,
-            "❌ <b>Рассылка отменена.</b>",
+            "Рассылка отменена.",
             reply_markup=None,
         )
         return
@@ -1693,9 +1687,9 @@ async def moderate(callback: CallbackQuery, bot: Bot) -> None:
             bot,
             chat_id=message.chat.id,
             text=(
-                f"{ce('chat')} <b>Ответь на это сообщение или прямо на карточку заявки, чтобы отправить ответ пользователю.</b>\n"
-                f"{ce('timer')} У тебя есть <b>15 минут</b>. Ответ придёт пользователю в личку с цитатой его предложения.\n\n"
-                f"<b>Исходное сообщение:</b>\n<blockquote>"
+                "<b>Ответ пользователю</b>\n"
+                "Ответь на это сообщение в течение 15 минут.\n\n"
+                "<b>Предложение:</b>\n<blockquote>"
                 f"{html.escape(str(sub['quote_text'] or '[Сообщение]'))}</blockquote>"
             ),
             reply_markup=reply_cancel_buttons(sub_id),
@@ -1754,7 +1748,7 @@ async def moderate(callback: CallbackQuery, bot: Bot) -> None:
             reviewed_by_name=callback.from_user.full_name,
         )
         new_status = "published"
-        notice = f"{ce('check')} Твоё предложение принято и опубликовано!"
+        notice = "Твоё предложение опубликовано."
         toast = "Принято"
     elif action == "no":
         if not db.move(
@@ -1767,7 +1761,7 @@ async def moderate(callback: CallbackQuery, bot: Bot) -> None:
             await callback.answer("Заявка уже обрабатывается.")
             return
         new_status = "rejected"
-        notice = f"{ce('cross')} Твоё предложение не принято."
+        notice = "Твоё предложение отклонили."
         toast = "Отклонено"
     elif action == "block":
         membership = await moderation_group_membership(bot, int(sub["user_id"]))
@@ -1795,7 +1789,7 @@ async def moderate(callback: CallbackQuery, bot: Bot) -> None:
             return
         db.block_user(sub["user_id"], callback.from_user.id)
         new_status = "blocked"
-        notice = f"{ce('ban')} Доступ к отправке предложений заблокирован."
+        notice = "Отправка предложений недоступна."
         toast = "Пользователь заблокирован"
     else:
         await callback.answer("Неизвестное действие.", show_alert=True)
@@ -1839,7 +1833,7 @@ async def cleanup_processed_inline_keyboards(bot: Bot) -> None:
                 preview = html.escape(str(sub["quote_text"] or "[Сообщение]")[:700])
                 control_text = (
                     f"{moderation_footer(sub, 'pending', html_safe=True)}\n\n"
-                    f"{ce('info')} Контент заявки: {preview}"
+                    f"Сообщение: {preview}"
                 )
                 control_card = await safe_bot_send_message(
                     bot,
@@ -1873,7 +1867,7 @@ async def cleanup_processed_inline_keyboards(bot: Bot) -> None:
                 preview = html.escape(str(sub["quote_text"] or "[Сообщение]")[:700])
                 control_text = (
                     f"{moderation_footer(sub, 'pending', html_safe=True)}\n\n"
-                    f"{ce('info')} Контент заявки: {preview}"
+                    f"Сообщение: {preview}"
                 )
                 control_card = await safe_bot_send_message(
                     bot,
