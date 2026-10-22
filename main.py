@@ -40,7 +40,8 @@ load_dotenv(ROOT / ".env")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DB_PATH = os.getenv("DB_PATH", str(ROOT / "suggestions.sqlite3"))
 
-# Known moderation group ID from the existing deployment. Publication must be configured separately.
+# Historical group ID is retained ONLY to ignore stale saved publication settings.
+# Never send new suggestions to another bot's old moderation group.
 REQUESTED_DEFAULT_CHAT_ID = "-5106639548"
 LEGACY_DEFAULT_CHAT_IDS = {"-1004422721133", "-1001358443115"}
 # These IDs are used only to remove obsolete private command menus from older versions.
@@ -103,19 +104,8 @@ def destination_chat_id() -> str | int | None:
 
 
 def moderation_chat_value() -> str | int | None:
-    # Keep the known moderation group as the fallback; never derive moderation from publication.
-    configured = parse_chat_id(MODERATION_ENV)
-    default_group = parse_chat_id(REQUESTED_DEFAULT_CHAT_ID)
-    destination = destination_chat_value()
-    # Recover automatically if a stale environment value points moderation at the publication chat.
-    if configured is not None and same_chat(configured, destination) and not same_chat(default_group, destination):
-        logger.warning(
-            "MODERATION_CHAT_ID matches the publication chat; using the known moderation group ID %s. "
-            "Set MODERATION_CHAT_ID explicitly to override this fallback.",
-            default_group,
-        )
-        return default_group
-    return configured if configured is not None else default_group
+    # A copied bot must never silently deliver private suggestions to the original bot's group.
+    return parse_chat_id(MODERATION_ENV)
 
 
 def moderation_chat_id() -> str | int | None:
@@ -235,20 +225,50 @@ async def resolve_configured_chats(bot: Bot) -> None:
         except TelegramAPIError as exc:
             logger.warning("Could not resolve moderation group %s: %s", moderation, exc)
 
-    # Compare Telegram's canonical IDs too: a channel username and its numeric ID can
-    # refer to the same chat even when the raw environment strings look different.
     if same_chat(resolved_destination_chat_id, resolved_moderation_chat_id):
-        default_group = parse_chat_id(REQUESTED_DEFAULT_CHAT_ID)
-        if not same_chat(default_group, resolved_destination_chat_id):
-            try:
-                resolved_moderation_chat_id = (await bot.get_chat(default_group)).id
-                logger.warning(
-                    "Resolved moderation and publication chats were identical. "
-                    "Falling back to known moderation group %s; set MODERATION_CHAT_ID explicitly.",
-                    resolved_moderation_chat_id,
-                )
-            except TelegramAPIError as exc:
-                logger.error("Could not resolve fallback moderation group %s: %s", default_group, exc)
+        logger.error(
+            "CONFIG ERROR: MODERATION_CHAT_ID and DESTINATION_CHAT_ID resolve to the same chat %s. "
+            "Set two different chats; no automatic fallback will be used.",
+            resolved_moderation_chat_id,
+        )
+
+
+async def moderation_configuration_issue(bot: Bot) -> str | None:
+    """Return a clear reason when the suggestion inbox cannot accept new submissions."""
+    target = moderation_chat_id()
+    if target is None:
+        return (
+            "Не задан MODERATION_CHAT_ID. Добавь бота в группу, отправь в ней "
+            "/chatid и укажи полученный ID в настройках хостинга."
+        )
+    if isinstance(target, int) and target > 0:
+        return (
+            "В MODERATION_CHAT_ID указан положительный ID пользователя, а нужен ID группы. "
+            "Добавь бота в группу, отправь в ней /chatid, скопируй отрицательный ID "
+            "в MODERATION_CHAT_ID и перезапусти бота."
+        )
+
+    try:
+        chat = await bot.get_chat(target)
+    except TelegramAPIError as exc:
+        logger.error("Cannot access moderation chat %s: %s", target, exc)
+        return (
+            "Бот не может открыть группу модерации. Проверь MODERATION_CHAT_ID, "
+            "добавь бота в группу и узнай её ID командой /chatid."
+        )
+
+    chat_type = getattr(chat.type, "value", chat.type)
+    if chat_type not in {"group", "supergroup"}:
+        return (
+            "MODERATION_CHAT_ID указывает не на группу, а на другой тип чата. "
+            "Добавь бота в группу и узнай её ID командой /chatid."
+        )
+    if same_chat(chat.id, destination_chat_id()):
+        return (
+            "Группа модерации и канал публикации имеют одинаковый ID. "
+            "Укажи разные чаты в MODERATION_CHAT_ID и DESTINATION_CHAT_ID."
+        )
+    return None
 
 
 # Custom emoji IDs from the Telegram custom-emoji pack TgAndroidIcons.
@@ -859,12 +879,14 @@ async def send_to_moderation_group(bot: Bot, sub_id: int) -> None:
         logger.error("Submission %s disappeared before moderation delivery", sub_id)
         return
 
-    target = moderation_chat_id()
-    if not target:
+    issue = await moderation_configuration_issue(bot)
+    if issue is not None:
         db.move(sub_id, "notifying", "delivery_failed")
-        await safe_notify(bot, sub["user_id"], "Не настроена группа для проверки предложений.")
+        logger.error("Cannot deliver submission %s: %s", sub_id, issue)
+        await safe_notify(bot, sub["user_id"], f"Предложение не отправлено. {issue}")
         return
 
+    target = moderation_chat_id()
     try:
         copied_ids, fallback_card_id = await copy_submission(
             bot, target, sub_id, moderation_controls=True
@@ -875,7 +897,8 @@ async def send_to_moderation_group(bot: Bot, sub_id: int) -> None:
         await safe_notify(
             bot,
             sub["user_id"],
-            "Не удалось передать предложение на проверку. Проверь, что бот добавлен в группу.",
+            "Не удалось передать предложение на проверку. Проверь права бота в группе "
+            "и MODERATION_CHAT_ID. Узнать ID группы можно командой /chatid.",
         )
         return
 
@@ -1394,6 +1417,16 @@ async def inbox(message: Message, bot: Bot) -> None:
         album_jobs[key] = asyncio.create_task(finish_album(bot, sub_id, key))
     elif fresh:
         await send_to_moderation_group(bot, sub_id)
+
+
+@router.message(Command("chatid"), F.chat.type.in_({"group", "supergroup"}))
+async def group_chat_id_command(message: Message) -> None:
+    # Works in any group where the bot is present, even before moderation is configured.
+    await safe_answer(
+        message,
+        f"ID этой группы: <code>{message.chat.id}</code>\n"
+        "Укажи его в переменной <code>MODERATION_CHAT_ID</code> и перезапусти бота.",
+    )
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}))
@@ -2009,6 +2042,9 @@ async def main() -> None:
         await bot.delete_webhook(drop_pending_updates=False)
         me = await bot.get_me()
         await resolve_configured_chats(bot)
+        configuration_issue = await moderation_configuration_issue(bot)
+        if configuration_issue is not None:
+            logger.error("CONFIG ERROR: %s", configuration_issue)
         await configure_commands(bot)
         if destination_chat_id() is None:
             logger.error(
@@ -2029,7 +2065,7 @@ async def main() -> None:
             "Started as @%s. Moderation group: %s (env=%r). Publication chat: %s (source=%s).",
             me.username,
             moderation_chat_id(),
-            MODERATION_ENV or f"fallback:{REQUESTED_DEFAULT_CHAT_ID}",
+            MODERATION_ENV or "(не задан)",
             destination_chat_id(),
             destination_config_source(),
         )
