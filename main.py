@@ -56,13 +56,6 @@ TIMEZONE = os.getenv("TIMEZONE", "Europe/Riga")
 ALBUM_DELAY = 2.0
 REPLY_TIMEOUT = 15 * 60
 
-PUBLICATION_DISCLAIMER = (
-    "This channel fully complies with all platform rules and community guidelines. "
-    "Content is intended for legal and acceptable use only Attention: We strictly comply with laws and ethical standards. "
-    "All information is provided solely for research and educational purposes. We do not encourage or carry out unauthorized collection "
-    "or dissemination of personal data"
-)
-
 logger = logging.getLogger("college_suggest")
 router = Router()
 db = Storage(DB_PATH)
@@ -696,106 +689,6 @@ async def safe_notify(bot: Bot, chat_id: int, text: str) -> None:
         logger.info("Cannot notify user %s: %s", chat_id, exc)
 
 
-def utf16_length(value: str) -> int:
-    return len(value.encode("utf-16-le")) // 2
-
-
-async def add_publication_disclaimer(
-    bot: Bot,
-    destination: int | str,
-    copied_ids: list[int],
-    items,
-) -> None:
-    """Append the legal disclaimer as a Telegram blockquote to the published post."""
-    caption_types = {"photo", "video", "animation", "document", "audio", "voice"}
-    candidates = [
-        (index, item)
-        for index, item in enumerate(items)
-        if str(item["content_type"] or "") == "text"
-        or str(item["content_type"] or "") in caption_types
-    ]
-    # Prefer an existing caption/text if it has room; otherwise use an empty caption
-    # slot in an album before falling back to a reply under the post.
-    candidates.sort(
-        key=lambda pair: 0 if str(pair[1]["content_text"] or "").strip() else 1
-    )
-
-    for index, item in candidates:
-        content_type = str(item["content_type"] or "")
-        original = str(item["content_text"] or "")
-        separator = "\n\n" if original else ""
-        combined = f"{original}{separator}{PUBLICATION_DISCLAIMER}"
-        limit = 4096 if content_type == "text" else 1024
-        if utf16_length(combined) > limit:
-            continue
-
-        entities = stored_entities(item)
-        entities.append(
-            MessageEntity(
-                type="blockquote",
-                offset=utf16_length(original + separator),
-                length=utf16_length(PUBLICATION_DISCLAIMER),
-            )
-        )
-        try:
-            if content_type == "text":
-                await bot.edit_message_text(
-                    chat_id=destination,
-                    message_id=copied_ids[index],
-                    text=combined,
-                    entities=entities or None,
-                    parse_mode=None,
-                )
-            else:
-                await bot.edit_message_caption(
-                    chat_id=destination,
-                    message_id=copied_ids[index],
-                    caption=combined,
-                    caption_entities=entities or None,
-                    parse_mode=None,
-                )
-            return
-        except TelegramAPIError as exc:
-            logger.warning(
-                "Could not append publication disclaimer to message %s: %s",
-                copied_ids[index],
-                exc,
-            )
-
-    # Stickers, round videos, oversized captions, or non-editable posts still get
-    # the disclaimer as a quoted reply so it is never silently omitted.
-    quoted_entities = [
-        MessageEntity(
-            type="blockquote",
-            offset=0,
-            length=utf16_length(PUBLICATION_DISCLAIMER),
-        )
-    ]
-    try:
-        await bot.send_message(
-            chat_id=destination,
-            text=PUBLICATION_DISCLAIMER,
-            entities=quoted_entities,
-            parse_mode=None,
-            reply_parameters=ReplyParameters(
-                message_id=copied_ids[0],
-                allow_sending_without_reply=True,
-            ),
-        )
-    except TelegramAPIError as exc:
-        logger.warning(
-            "Could not attach disclaimer as a reply to message %s; sending it as a separate quoted post: %s",
-            copied_ids[0],
-            exc,
-        )
-        await bot.send_message(
-            chat_id=destination,
-            text=PUBLICATION_DISCLAIMER,
-            entities=quoted_entities,
-            parse_mode=None,
-        )
-
-
 async def copy_submission(
     bot: Bot,
     destination: int | str,
@@ -868,7 +761,7 @@ async def copy_submission(
             return copied_ids, control_card.message_id
         return copied_ids, None
 
-    await add_publication_disclaimer(bot, destination, copied_ids, items)
+    # Publish exactly what the user sent, without extra quoted notices or messages.
     return copied_ids, None
 
 async def send_to_moderation_group(bot: Bot, sub_id: int) -> None:
@@ -1842,7 +1735,7 @@ async def moderate(callback: CallbackQuery, bot: Bot) -> None:
             return
 
         try:
-            # Publish the original submission and append the quoted disclaimer.
+            # Copy the original user content to the channel without appending any text.
             copied_ids, _ = await copy_submission(bot, target, sub_id)
         except (TelegramAPIError, ValueError) as exc:
             db.move(sub_id, "publishing", "publish_uncertain")
